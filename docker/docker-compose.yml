@@ -1,0 +1,28 @@
+# =============================================================================
+# EnergyMonitor - MQTT broker for local development
+# =============================================================================
+# The backend runs on the host (./mvnw spring-boot:run), so "backend" points to
+# the host through host-gateway. Production uses docker-compose.prod.yml, where
+# "backend" is the backend container.
+#
+# Before the first start: ./mosquitto/generate-dev-certs.sh
+# Start the backend first: the broker asks it to authenticate every client.
+services:
+  mosquitto:
+    image: iegomez/mosquitto-go-auth:3.0.0-mosquitto_2.0.18
+    container_name: energy-monitor-mqtt
+    ports:
+      # Backend listener, plain MQTT: host loopback only.
+      - "127.0.0.1:1883:1883"
+      # Devices (TLS): the whole LAN.
+      - "8883:8883"
+    extra_hosts:
+      - "backend:host-gateway"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      - ./mosquitto/certs:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:

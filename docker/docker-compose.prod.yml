@@ -1,0 +1,92 @@
+# =============================================================================
+# EnergyMonitor - Server deployment (broker + backend + MySQL)
+# =============================================================================
+# On the server:
+#   cp .env.prod.example .env.prod      # and fill it in
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# Published ports:
+#   8883  MQTT over TLS, for the devices (internet)
+#   8080  REST API, on 127.0.0.1 only: an HTTPS reverse proxy (Caddy/nginx) sits
+#         in front and must NOT forward /internal/** (see README.md, "Deployment")
+# The plain MQTT listener (1883) and MySQL stay inside the Docker network.
+#
+# Here "backend" is the backend container, so mosquitto.conf is the same file
+# as in development. The backend is built from its repository: BACKEND_CONTEXT
+# (default ../../backend/energy-monitor-backend) must point to a clone of it.
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: energy_monitor
+      MYSQL_USER: energy_app
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ${BACKEND_CONTEXT:-../../backend/energy-monitor-backend}
+    # The image runs as uid 10001. JWT_KEYS_DIR/private.pem has to be readable by this user:
+    # either chown it to 10001 or set BACKEND_UID/BACKEND_GID to the owner of the key files.
+    user: "${BACKEND_UID:-10001}:${BACKEND_GID:-10001}"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # Any profile other than "local" (the default one).
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/energy_monitor?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
+      SPRING_DATASOURCE_USERNAME: energy_app
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+      SECURITY_JWT_PRIVATE_KEY_PATH: /run/keys/private.pem
+      SECURITY_JWT_PUBLIC_KEY_PATH: /run/keys/public.pem
+      SECURITY_RESET_PEPPER: ${SECURITY_RESET_PEPPER:?SECURITY_RESET_PEPPER is required}
+      SECURITY_CORS_ALLOWED_ORIGINS: ${SECURITY_CORS_ALLOWED_ORIGINS:?SECURITY_CORS_ALLOWED_ORIGINS is required}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      MQTT_BACKEND_USER: ${MQTT_BACKEND_USER:-em-backend}
+      MQTT_BACKEND_PASS: ${MQTT_BACKEND_PASS:?MQTT_BACKEND_PASS is required}
+      # Only the internal Docker network may call /internal/mqtt/auth/**.
+      MQTT_AUTH_ALLOWED_NETWORKS: 172.16.0.0/12,127.0.0.1/32
+      # Broker address the web app writes to a module when linking it over Bluetooth.
+      DEVICE_MQTT_PUBLIC_HOST: ${DEVICE_MQTT_PUBLIC_HOST:?DEVICE_MQTT_PUBLIC_HOST is required}
+      DEVICE_MQTT_PUBLIC_PORT: ${DEVICE_MQTT_PUBLIC_PORT:-8883}
+      NOTIFICATION_VAPID_PUBLIC_KEY: ${NOTIFICATION_VAPID_PUBLIC_KEY:-}
+      NOTIFICATION_VAPID_PRIVATE_KEY: ${NOTIFICATION_VAPID_PRIVATE_KEY:-}
+      NOTIFICATION_WEB_URL: ${NOTIFICATION_WEB_URL:?NOTIFICATION_WEB_URL is required}
+    volumes:
+      - ${JWT_KEYS_DIR:?JWT_KEYS_DIR is required}:/run/keys:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  mosquitto:
+    image: iegomez/mosquitto-go-auth:3.0.0-mosquitto_2.0.18
+    depends_on:
+      - backend
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      # server.crt = fullchain.pem and server.key = privkey.pem from Let's Encrypt
+      # for the broker domain (see README.md, "Deployment").
+      - ${MQTT_CERT_DIR:?MQTT_CERT_DIR is required}:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  mosquitto-data:
