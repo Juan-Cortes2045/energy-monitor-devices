@@ -99,7 +99,18 @@ enum class Join { Idle, Connecting, WaitingBroker };
 // Why setup mode started. With NoWifi the module is already linked and only lost
 // the network: the saved network keeps being retried and the portal is not
 // opened, because WiFiManager shuts the STA connection down while it is active.
-enum class SetupReason { Unlinked, Button, NoWifi };
+// With Rejected the broker refuses the saved credentials (the device was removed
+// from its home in the web app, or its key was replaced): the network is fine,
+// so it is kept as well and only Bluetooth is offered, to link it again.
+enum class SetupReason { Unlinked, Button, NoWifi, Rejected };
+
+// Consecutive "not authorized" answers of the broker before offering Bluetooth.
+#define MQTT_REJECTIONS_FOR_SETUP 3
+uint8_t mqttRejections = 0;
+
+// NoWifi and Rejected keep the station connection: no portal. A macro, not a
+// function: the Arduino builder would put its prototype above the types it needs.
+#define KEEPS_STATION(reason) ((reason) == SetupReason::NoWifi || (reason) == SetupReason::Rejected)
 
 bool setupMode = false;
 SetupReason setupReason = SetupReason::Unlinked;
@@ -705,13 +716,14 @@ bool mqttConnect() {
     logLine("[MQTT] connected as " + String(clientId));
     publishStatus("online");
     reconnectDelayMs = RECONNECT_MIN_DELAY_MS;
+    mqttRejections = 0;
     if (joinState == Join::WaitingBroker) {
       joinState = Join::Idle;
       bleNotify("mqtt_ok");
       // Give the web app a moment to read the final state.
       setupExitAtMs = millis() + 15000UL;
-    } else if (setupMode && setupReason == SetupReason::NoWifi) {
-      // The saved network came back on its own: nothing left to configure.
+    } else if (setupMode && KEEPS_STATION(setupReason)) {
+      // The saved network (or the credentials) work again: nothing left to configure.
       setupExitAtMs = millis() + 1000UL;
     }
     blink(2, 120);
@@ -729,6 +741,15 @@ bool mqttConnect() {
       char status[24];
       snprintf(status, sizeof(status), "mqtt_failed:%d", state);
       bleNotify(status);
+    } else if (state == 4 || state == 5) {
+      // Wrong credentials never fix themselves: after a few answers in a row the
+      // module offers Bluetooth so it can be linked again from the web app.
+      if (mqttRejections < 255) {
+        mqttRejections++;
+      }
+      if (mqttRejections >= MQTT_REJECTIONS_FOR_SETUP && !setupMode) {
+        enterSetupMode(SetupReason::Rejected, "the server rejects this module (removed from its home?)");
+      }
     }
   }
   return ok;
@@ -779,7 +800,7 @@ void enterSetupMode(SetupReason reason, const char* why) {
   setupUntilMs = millis() + SETUP_MODE_TIMEOUT_MS;
   setupExitAtMs = 0;
   // A user gesture (BOOT) or an unlinked module also opens the portal.
-  bool withPortal = reason != SetupReason::NoWifi;
+  bool withPortal = !KEEPS_STATION(reason);
   if (setupMode) {
     if (withPortal) {
       setupReason = reason;
@@ -802,7 +823,7 @@ void enterSetupMode(SetupReason reason, const char* why) {
             "' and open http://192.168.4.1");
     startPortal();
   } else {
-    logLine(String("[SETUP] ") + why + ". Still retrying the saved network; it can also be "
+    logLine(String("[SETUP] ") + why + ". Still retrying on its own; it can also be "
             "linked from the web app (Bluetooth). Hold BOOT 3 s to open the Wi-Fi portal.");
   }
 }
@@ -901,7 +922,7 @@ void handleJoin() {
       WiFi.disconnect(false, false);
       bleNotify(status);
       // The portal is reopened in case the user prefers it.
-      if (setupMode && setupReason != SetupReason::NoWifi) {
+      if (setupMode && !KEEPS_STATION(setupReason)) {
         startPortal();
       }
     }

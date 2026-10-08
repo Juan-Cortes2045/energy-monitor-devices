@@ -195,8 +195,20 @@ Notes:
 - On **Linux**, Chrome ships Web Bluetooth disabled: enable
   `chrome://flags/#enable-experimental-web-platform-features` and relaunch.
 - Web Bluetooth only works on `https://` or `http://localhost`.
-- Linking the same module again (new network or router) keeps its identity and history and issues
-  a new `api_key`. A module linked to another home is refused.
+- Linking the same module again keeps its identity and history and issues a new `api_key`. A
+  module linked to another home is refused.
+
+**Change the Wi-Fi of a linked module** (moving house, a new Wi-Fi password, a new internet
+provider): web app → home → **Devices** → the refresh icon of the device (owner only). It is not a
+new link: no appliance step, history and alerts stay, and no "device linked" notice is sent.
+
+1. Without its network the module turns Bluetooth on by itself after 5 minutes; to skip the wait,
+   hold **BOOT** for 3 s.
+2. **Find module** and pick `EnergyMonitor-<code>`: the web app refuses any other module.
+3. Pick the new network and type its password. The backend issues a new `api_key` (the old one
+   stops working) and the web app writes network, server and key as in linking.
+
+The pencil icon edits the appliance, name and room; it does not touch the module.
 
 **Fallback without Web Bluetooth** (iPhone/Safari, Firefox): join the `EnergyMonitor-Setup` Wi-Fi
 (your `PORTAL_PASSWORD`), open `http://192.168.4.1` → **Configure WiFi**, and fill in the network
@@ -215,7 +227,7 @@ This path requires the device to exist in the backend already (with its api key)
 Expected serial output:
 
 ```
-=== EnergyMonitor ESP32 + PZEM-004T V3 fw=1.3.3 ===
+=== EnergyMonitor ESP32 + PZEM-004T V3 fw=1.3.4 ===
 [PZEM] UART2 ready at 9600 baud, addr=0xf8
 [TLS] trusting Let's Encrypt and the development CA
 [CFG] deviceId=DEV0000042 deviceCode=EM1A2B broker=192.168.1.50:8883 (TLS) apiKey=set
@@ -318,7 +330,7 @@ and drops a message whose `deviceId` does not match.
   "status": "online",
   "rssi": -58,
   "ip": "192.168.1.37",
-  "firmwareVersion": "1.3.3",
+  "firmwareVersion": "1.3.4",
   "uptimeSeconds": 12345
 }
 ```
@@ -354,7 +366,8 @@ the web app, by mail and by browser push (per user, in **Settings → Notificati
 
 | Alert | `message_key` | Raised | Closed |
 |---|---|---|---|
-| Device linked (notice) | `alert.device.linked` | when a module is linked from the web | the user **marks it as read** |
+| Device linked (notice) | `alert.device.linked` | first reading after the module is linked from the web | the user **marks it as read** |
+| Limit reached | `alert.limit.daily` / `.monthly` | the home's energy of the day / month reaches the limit in the thresholds | **by itself**, in a new period or with a higher limit |
 | Device disconnected | `alert.connectivity.offline` | last will (~22 s after the cut) or 150 s without data | **by itself**, when the module reports again |
 | High / critical consumption | `alert.threshold.high` / `.critical` | a reading in the HIGH or CRITICAL level | **by itself**, with the first LOW or MEDIUM reading |
 
