@@ -123,6 +123,7 @@ String blePendingConfig;
 volatile bool bleConfigReady = false;
 volatile bool bleScanRequested = false;
 bool scanRunning = false;
+uint8_t scanAttempts = 0;
 
 // -----------------------------------------------------------------------------
 // Electrical sample
@@ -538,8 +539,18 @@ void startScan() {
   if (scanRunning) {
     return;
   }
+  // The radio cannot scan while the station is joining a network ("sta is
+  // connecting, cannot set config") and the scan would report 0 networks: the
+  // attempt in progress is dropped first. ensureConnectivity() does not retry
+  // while scanRunning and resumes right after the scan.
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(false, false);
+    delay(100);
+  }
   // Asynchronous: the scan takes ~2-4 s and must not hold up measuring.
-  WiFi.scanNetworks(true, false);
+  if (WiFi.scanNetworks(true, false) == WIFI_SCAN_FAILED) {
+    logLine("[WiFi] scan could not start");
+  }
   scanRunning = true;
 }
 
@@ -556,6 +567,16 @@ void handleScan() {
     return;
   }
   scanRunning = false;
+  if (found == WIFI_SCAN_FAILED && scanAttempts < 3) {
+    scanAttempts++;
+    WiFi.scanDelete();
+    logLine("[WiFi] scan failed, retrying (" + String(scanAttempts) + "/3)");
+    delay(300);
+    startScan();
+    return;
+  }
+  scanAttempts = 0;
+  lastWifiRetryMs = 0;   // reconnect to the saved network right after the scan
   JsonDocument doc;
   JsonArray list = doc.to<JsonArray>();
   if (found > 0) {
@@ -840,6 +861,15 @@ void applyBleConfig(const String& json) {
   }
   WiFi.mode(WIFI_STA);
   WiFi.persistent(true);   // the network is saved for the next boots
+  // While the station is still trying the old network (or scanning) the radio
+  // refuses a new configuration ("sta is connecting, cannot set config") and
+  // the new network would never be tried: both are stopped first.
+  if (scanRunning) {
+    WiFi.scanDelete();
+    scanRunning = false;
+  }
+  WiFi.disconnect(false, false);
+  delay(100);
   lastDisconnectReason = 0;
   WiFi.begin(ssid, pass);
   joinState = Join::Connecting;
@@ -866,6 +896,8 @@ void handleJoin() {
                            : reason == 201                                  ? "wifi_failed:notfound"
                                                                             : "wifi_failed";
       joinState = Join::Idle;
+      logLine("[WiFi] join of '" + WiFi.SSID() + "' failed, status=" + String(WiFi.status()) +
+              " reason=" + String(reason));
       WiFi.disconnect(false, false);
       bleNotify(status);
       // The portal is reopened in case the user prefers it.
