@@ -1,0 +1,188 @@
+// =============================================================================
+// EnergyMonitor - ESP32 + PZEM-004T V3 firmware configuration
+// =============================================================================
+// This file IS versioned: it holds no secrets.
+//
+// What changes from one device to another (identity, api key and server) is NOT
+// compiled in: it is written from the web over Bluetooth (or from the Wi-Fi
+// setup portal) and stored in the ESP32 NVS. One binary therefore serves every
+// device and every home network. See README.md, section 4.
+//
+// For development those values can be preloaded in secrets.h (not versioned,
+// see secrets.h.example). Whatever is saved on the device takes precedence.
+// =============================================================================
+#ifndef ENERGY_MONITOR_CONFIG_H
+#define ENERGY_MONITOR_CONFIG_H
+
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+
+// -----------------------------------------------------------------------------
+// 1. Device identity (defaults)
+// -----------------------------------------------------------------------------
+// Must match the row of the backend `device` table:
+//   id_device   VARCHAR(10)  -> deviceId
+//   device_code VARCHAR(6)   -> deviceCode, MQTT username
+//   api_key     VARCHAR(100) -> apiKey, MQTT password
+#ifndef DEFAULT_DEVICE_ID
+#define DEFAULT_DEVICE_ID      ""
+#endif
+#ifndef DEFAULT_DEVICE_CODE
+#define DEFAULT_DEVICE_CODE    ""
+#endif
+#ifndef DEFAULT_DEVICE_API_KEY
+#define DEFAULT_DEVICE_API_KEY ""
+#endif
+
+#define DEVICE_NAME      "Main meter"
+#define DEVICE_LOCATION  "Room 1"
+#define FIRMWARE_VERSION "1.3.1"
+
+// -----------------------------------------------------------------------------
+// 2. Setup mode: Bluetooth (web) + Wi-Fi portal (fallback)
+// -----------------------------------------------------------------------------
+// In setup mode the module does two things at once, without stopping measuring:
+//   - advertises the Bluetooth LE linking service: the web app (Chrome/Edge)
+//     finds it, reads the networks the ESP32 sees and sends Wi-Fi, server and
+//     identity (see README.md, section 4)
+//   - opens the PORTAL_SSID Wi-Fi portal, for browsers without Web Bluetooth
+//     (iPhone/Safari, Firefox)
+// It starts: on boot without configuration, when BOOT is held for 3 s, or when
+// the saved network does not show up. When it started because the network was
+// lost only Bluetooth is enabled (the portal would shut the station connection
+// down) and the module leaves setup mode on its own as soon as it reaches the
+// broker again. It also ends after SETUP_MODE_TIMEOUT_MS.
+#define SETUP_MODE_TIMEOUT_MS    600000UL           // 10 min
+#define WIFI_SETUP_AFTER_MS      300000UL           // 5 min without Wi-Fi
+#define WIFI_JOIN_TIMEOUT_MS     20000UL
+#define WIFI_RETRY_MS            30000UL            // retry of the saved network
+#define WIFI_RESTART_AFTER_MS    600000UL           // 10 min without network: restart the ESP32
+#define PORTAL_BUTTON_PIN        0                  // BOOT button of the board
+#define PORTAL_BUTTON_HOLD_MS    3000UL
+
+#define PORTAL_SSID              "EnergyMonitor-Setup"
+// Password of the setup access point (at least 8 characters). This repository is
+// public, so set your own in secrets.h; this default only exists so the sketch
+// builds out of the box.
+#ifndef PORTAL_PASSWORD
+#define PORTAL_PASSWORD          "change-me-setup"
+#endif
+
+// Bluetooth name prefix: "EnergyMonitor-<deviceCode>".
+#define BLE_NAME_PREFIX          "EnergyMonitor-"
+// GATT linking service. The web app uses the same UUIDs
+// (frontend: src/services/devices/bleProvisioning.js).
+#define BLE_SERVICE_UUID         "8f2a0001-5e8c-4a7b-9c3d-2f1e0b7a6c51"
+#define BLE_INFO_UUID            "8f2a0002-5e8c-4a7b-9c3d-2f1e0b7a6c51"  // read: identity
+#define BLE_NETWORKS_UUID        "8f2a0003-5e8c-4a7b-9c3d-2f1e0b7a6c51"  // read: networks, write: rescan
+#define BLE_CONFIG_UUID          "8f2a0004-5e8c-4a7b-9c3d-2f1e0b7a6c51"  // write: configuration (chunked)
+#define BLE_STATUS_UUID          "8f2a0005-5e8c-4a7b-9c3d-2f1e0b7a6c51"  // read/notify: progress
+#define BLE_MAX_NETWORKS         12
+
+// Module code when nobody configured one: "EM" + 4 hex digits of the MAC.
+
+// -----------------------------------------------------------------------------
+// 3. MQTT broker (Eclipse Mosquitto - ADR-007)
+// -----------------------------------------------------------------------------
+// Production: public domain of the broker, e.g. "mqtt.example.com".
+// Development: LAN IP of the PC running docker/ (hostname -I).
+// NEVER localhost: the ESP32 reaches the broker over the network.
+#ifndef DEFAULT_MQTT_HOST
+#define DEFAULT_MQTT_HOST ""
+#endif
+#ifndef DEFAULT_MQTT_PORT
+#define DEFAULT_MQTT_PORT 8883
+#endif
+
+// TLS is mandatory outside a test bench: the api key is the MQTT password. The
+// firmware trusts the Let's Encrypt roots (ca_certs.h) and, when present, the
+// development CA (dev_ca.h, generated by generate-dev-certs.sh).
+// The ESP32 needs the time (NTP) to validate the certificate.
+#define MQTT_USE_TLS      1
+
+// A module that loses power cannot say goodbye: the broker publishes its LWT
+// "offline" after 1.5 x keepalive without news. 15 s => ~22 s until the web app
+// shows it disconnected (90 s with 60 s). The cost is a 2-byte PINGREQ every 15 s.
+#define MQTT_KEEPALIVE_S  15
+#define MQTT_BUFFER_SIZE  1024
+#define MQTT_SOCKET_TIMEOUT_S 15
+
+// -----------------------------------------------------------------------------
+// 4. Topics
+// -----------------------------------------------------------------------------
+// Contract defined in README.md.
+//   energy-monitor/devices/{deviceId}/telemetry  QoS 0, not retained
+//   energy-monitor/devices/{deviceId}/status     QoS 0, retained (includes the LWT)
+// The broker only lets each device publish on its own two topics.
+#define TOPIC_BASE "energy-monitor/devices/"
+
+// PubSubClient always publishes at QoS 0 (setWill() too):
+//   - there is never a duplicate delivery, the backend does not need to dedupe
+//   - a reading can be lost; the backend tolerates gaps and marks OFFLINE on
+//     inactivity (device.connectivity.offline-after)
+#define MQTT_QOS 0
+
+// -----------------------------------------------------------------------------
+// 5. Timing
+// -----------------------------------------------------------------------------
+// 60 s per FRS5.1 (docs/en-monitor-docs/04-requirements/SRS.md)
+#define TELEMETRY_INTERVAL_MS  60000UL
+// Refresh of the retained status (rssi, uptime) even when nothing changed.
+#define STATUS_INTERVAL_MS     300000UL
+
+// MQTT reconnection backoff
+#define RECONNECT_MIN_DELAY_MS  2000UL
+#define RECONNECT_MAX_DELAY_MS 30000UL
+
+// Any earlier time is considered "clock not synchronized" (Nov 2023).
+#define MIN_VALID_EPOCH 1700000000L
+
+// -----------------------------------------------------------------------------
+// 6. PZEM-004T V3 wiring (Modbus RTU over UART)
+// -----------------------------------------------------------------------------
+// PZEM TX  -> ESP32 GPIO16 (RX2)
+// PZEM RX  -> ESP32 GPIO17 (TX2)
+// PZEM VCC -> 5V   /   PZEM GND -> GND
+#define PZEM_RX_PIN      16
+#define PZEM_TX_PIN      17
+#define PZEM_BAUD        9600
+
+// 0xF8 is the factory default Modbus address of the PZEM-004T V3.
+#define PZEM_ADDRESS     0xF8
+
+// PZEM_READ_DELAY_MS MUST exceed the library UPDATE_TIME (200 ms, fixed in
+// PZEM004Tv30.cpp). A retry sooner makes updateValues() return the stale cache
+// without asking the sensor again, and zeros would be published as if they were
+// a real reading.
+#define PZEM_READ_RETRIES   3
+#define PZEM_READ_DELAY_MS  350
+
+// Plausible voltage range. Powered from the mains the module reads roughly
+// 110-260 V. Used to discard the empty cache the library returns after a
+// communication failure. Set to 0.0f to disable the filter (bench tests without mains).
+#define PZEM_MIN_VALID_VOLTAGE 10.0f
+#define PZEM_MAX_VALID_VOLTAGE 300.0f
+
+// -----------------------------------------------------------------------------
+// 7. Auxiliary hardware
+// -----------------------------------------------------------------------------
+#define LED_PIN        2
+
+// -----------------------------------------------------------------------------
+// 8. Offline queue
+// -----------------------------------------------------------------------------
+// docs/en-monitor-docs/01-context/scope.md:80 - the offline buffer is mandatory,
+// not optional. 30 samples x 60 s = 30 min of tolerance.
+#define ENABLE_OFFLINE_QUEUE true
+#define OFFLINE_QUEUE_SIZE   30
+
+// -----------------------------------------------------------------------------
+// 9. Payload
+// -----------------------------------------------------------------------------
+// serializeJson returns 0 when the output buffer is too small. If it falls short
+// the retained status is not published (it is never published empty).
+#define TELEMETRY_PAYLOAD_SIZE  512
+#define STATUS_PAYLOAD_SIZE     448
+
+#endif // ENERGY_MONITOR_CONFIG_H
