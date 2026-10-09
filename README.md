@@ -227,7 +227,7 @@ This path requires the device to exist in the backend already (with its api key)
 Expected serial output:
 
 ```
-=== EnergyMonitor ESP32 + PZEM-004T V3 fw=1.3.4 ===
+=== EnergyMonitor ESP32 + PZEM-004T V3 fw=1.3.5 ===
 [PZEM] UART2 ready at 9600 baud, addr=0xf8
 [TLS] trusting Let's Encrypt and the development CA
 [CFG] deviceId=DEV0000042 deviceCode=EM1A2B broker=192.168.1.50:8883 (TLS) apiKey=set
@@ -330,7 +330,7 @@ and drops a message whose `deviceId` does not match.
   "status": "online",
   "rssi": -58,
   "ip": "192.168.1.37",
-  "firmwareVersion": "1.3.4",
+  "firmwareVersion": "1.3.5",
   "uptimeSeconds": 12345
 }
 ```

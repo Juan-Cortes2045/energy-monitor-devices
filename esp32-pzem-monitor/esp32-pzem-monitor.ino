@@ -86,7 +86,6 @@ unsigned long lastStatusMs = 0;
 unsigned long lastReconnectAttemptMs = 0;
 unsigned long reconnectDelayMs = RECONNECT_MIN_DELAY_MS;
 unsigned long wifiLostSinceMs = 0;
-unsigned long buttonDownSinceMs = 0;
 unsigned long lastBlinkMs = 0;
 
 // -----------------------------------------------------------------------------
@@ -102,7 +101,10 @@ enum class Join { Idle, Connecting, WaitingBroker };
 // With Rejected the broker refuses the saved credentials (the device was removed
 // from its home in the web app, or its key was replaced): the network is fine,
 // so it is kept as well and only Bluetooth is offered, to link it again.
-enum class SetupReason { Unlinked, Button, NoWifi, Rejected };
+// With NoBroker the network works but the server does not answer (the module
+// moved to another network and the saved server address is not reachable from
+// it): same, Bluetooth is offered to send the new network and server.
+enum class SetupReason { Unlinked, Button, NoWifi, Rejected, NoBroker };
 
 // Consecutive "not authorized" answers of the broker before offering Bluetooth.
 #define MQTT_REJECTIONS_FOR_SETUP 3
@@ -110,7 +112,18 @@ uint8_t mqttRejections = 0;
 
 // NoWifi and Rejected keep the station connection: no portal. A macro, not a
 // function: the Arduino builder would put its prototype above the types it needs.
-#define KEEPS_STATION(reason) ((reason) == SetupReason::NoWifi || (reason) == SetupReason::Rejected)
+#define KEEPS_STATION(reason) ((reason) == SetupReason::NoWifi || (reason) == SetupReason::Rejected || \
+                               (reason) == SetupReason::NoBroker)
+
+// Wi-Fi up but no broker for this long: offer Bluetooth (NoBroker).
+#define BROKER_SETUP_AFTER_MS 180000UL
+unsigned long brokerLostSinceMs = 0;
+
+// The BOOT button is watched by an interrupt: a connection attempt to an
+// unreachable server blocks loop() for seconds, and polling alone missed holds.
+volatile unsigned long buttonPressedAtMs = 0;
+volatile bool buttonHoldDone = false;
+
 
 bool setupMode = false;
 SetupReason setupReason = SetupReason::Unlinked;
@@ -958,16 +971,33 @@ void handleSetupMode() {
   }
 }
 
-void handlePortalButton() {
+// Defined here, not next to its variables: the Arduino builder puts function
+// prototypes above the first function, before the types other prototypes need.
+void IRAM_ATTR onPortalButton() {
   if (digitalRead(PORTAL_BUTTON_PIN) == LOW) {
-    if (buttonDownSinceMs == 0) {
-      buttonDownSinceMs = millis();
-    } else if (millis() - buttonDownSinceMs >= PORTAL_BUTTON_HOLD_MS) {
-      buttonDownSinceMs = 0;
-      enterSetupMode(SetupReason::Button, "BOOT button pressed");
+    if (buttonPressedAtMs == 0) {
+      buttonPressedAtMs = millis();
     }
   } else {
-    buttonDownSinceMs = 0;
+    if (buttonPressedAtMs != 0 && millis() - buttonPressedAtMs >= PORTAL_BUTTON_HOLD_MS) {
+      buttonHoldDone = true;
+    }
+    buttonPressedAtMs = 0;
+  }
+}
+
+void handlePortalButton() {
+  // A hold that ended while loop() was blocked, or one still going on.
+  bool held = buttonHoldDone;
+  unsigned long pressedAt = buttonPressedAtMs;
+  if (!held && pressedAt != 0 && digitalRead(PORTAL_BUTTON_PIN) == LOW &&
+      millis() - pressedAt >= PORTAL_BUTTON_HOLD_MS) {
+    held = true;
+    buttonPressedAtMs = millis();   // one trigger per hold
+  }
+  if (held) {
+    buttonHoldDone = false;
+    enterSetupMode(SetupReason::Button, "BOOT button pressed");
   }
 }
 
@@ -1030,7 +1060,14 @@ void ensureConnectivity() {
     logWiFi();
   }
   if (mqtt.connected()) {
+    brokerLostSinceMs = 0;
     return;
+  }
+  if (brokerLostSinceMs == 0) {
+    brokerLostSinceMs = millis();
+  } else if (!setupMode && settingsComplete() && joinState == Join::Idle &&
+             millis() - brokerLostSinceMs >= BROKER_SETUP_AFTER_MS) {
+    enterSetupMode(SetupReason::NoBroker, "the server does not answer from this network");
   }
 
   unsigned long now = millis();
@@ -1112,6 +1149,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   pinMode(PORTAL_BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PORTAL_BUTTON_PIN), onPortalButton, CHANGE);
 
   // PZEM-004T V3: Modbus RTU at 9600 8N1 over UART2.
   Serial2.begin(PZEM_BAUD, SERIAL_8N1, PZEM_RX_PIN, PZEM_TX_PIN);
