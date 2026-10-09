@@ -52,6 +52,11 @@ struct DeviceSettings {
   char deviceId[11];
   char deviceCode[7];
   char apiKey[101];
+  // The home network, kept here as well as in the Wi-Fi driver: reconnecting with
+  // the driver's own copy (WiFi.begin() without arguments) was refused by some
+  // phone hotspots (reason 2) and the copy was lost when the radio restarted.
+  char wifiSsid[33];
+  char wifiPass[65];
 };
 
 DeviceSettings settings;
@@ -146,6 +151,9 @@ String bleConfigBuffer;
 String blePendingConfig;
 volatile bool bleConfigReady = false;
 volatile bool bleScanRequested = false;
+// Last list served on NETWORKS. A write on it ("scan again") must not leave the
+// written bytes as its value: the web app would read them as the list.
+String lastNetworksJson = "[]";
 bool scanRunning = false;
 uint8_t scanAttempts = 0;
 
@@ -245,6 +253,8 @@ void loadSettings() {
             prefs.getString("device_code", DEFAULT_DEVICE_CODE).c_str());
   copyField(settings.apiKey, sizeof(settings.apiKey),
             prefs.getString("api_key", DEFAULT_DEVICE_API_KEY).c_str());
+  copyField(settings.wifiSsid, sizeof(settings.wifiSsid), prefs.getString("wifi_ssid", "").c_str());
+  copyField(settings.wifiPass, sizeof(settings.wifiPass), prefs.getString("wifi_pass", "").c_str());
   prefs.end();
 
   if (strlen(settings.deviceCode) == 0) {
@@ -263,7 +273,34 @@ void saveSettings() {
   prefs.putString("device_id", settings.deviceId);
   prefs.putString("device_code", settings.deviceCode);
   prefs.putString("api_key", settings.apiKey);
+  prefs.putString("wifi_ssid", settings.wifiSsid);
+  prefs.putString("wifi_pass", settings.wifiPass);
   prefs.end();
+}
+
+// Joins the saved home network with its name and password, explicitly.
+void beginSavedWiFi() {
+  if (settings.wifiSsid[0] != '\0') {
+    WiFi.begin(settings.wifiSsid, settings.wifiPass);
+  } else {
+    WiFi.begin();   // configured before 1.3.7: only the driver has the network
+  }
+}
+
+// Modules configured before 1.3.7 only have the network in the Wi-Fi driver:
+// copy it once into the settings.
+void adoptDriverNetwork() {
+  if (settings.wifiSsid[0] != '\0') {
+    return;
+  }
+  String ssid = WiFi.SSID();
+  if (ssid.length() == 0) {
+    return;
+  }
+  copyField(settings.wifiSsid, sizeof(settings.wifiSsid), ssid.c_str());
+  copyField(settings.wifiPass, sizeof(settings.wifiPass), WiFi.psk().c_str());
+  saveSettings();
+  logLine("[CFG] Wi-Fi network '" + ssid + "' kept in the settings");
 }
 
 bool settingsComplete() {
@@ -302,6 +339,10 @@ void onPortalSave() {
   copyField(settings.deviceCode, sizeof(settings.deviceCode), paramDeviceCode.getValue());
   if (strlen(paramApiKey.getValue()) > 0) {
     copyField(settings.apiKey, sizeof(settings.apiKey), paramApiKey.getValue());
+  }
+  if (wm.getWiFiSSID().length() > 0) {
+    copyField(settings.wifiSsid, sizeof(settings.wifiSsid), wm.getWiFiSSID().c_str());
+    copyField(settings.wifiPass, sizeof(settings.wifiPass), wm.getWiFiPass().c_str());
   }
   saveSettings();
   logLine("[CFG] settings saved from the portal");
@@ -493,7 +534,8 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 class NetworksCallbacks : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic*, NimBLEConnInfo&) override {
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+    characteristic->setValue(lastNetworksJson);
     bleScanRequested = true;
   }
 };
@@ -631,6 +673,7 @@ void handleScan() {
   serializeJson(doc, out);
   if (bleNetworks != nullptr) {
     bleNetworks->setValue(out);
+    lastNetworksJson = out;
   }
   logLine("[WiFi] " + String(list.size()) + " visible network(s)");
   bleNotify("scan_done");
@@ -856,7 +899,7 @@ void exitSetupMode(const char* reason) {
   logLine(String("[SETUP] done: ") + reason);
   if (WiFi.status() != WL_CONNECTED) {
     // The portal may have left the station off: go back to the saved network.
-    WiFi.begin();
+    beginSavedWiFi();
     lastWifiRetryMs = millis();
   }
 }
@@ -882,6 +925,8 @@ void applyBleConfig(const String& json) {
   snprintf(settings.mqttPort, sizeof(settings.mqttPort), "%d", port);
   copyField(settings.deviceId, sizeof(settings.deviceId), id);
   copyField(settings.apiKey, sizeof(settings.apiKey), key);
+  copyField(settings.wifiSsid, sizeof(settings.wifiSsid), ssid);
+  copyField(settings.wifiPass, sizeof(settings.wifiPass), pass);
   saveSettings();
   if (mqtt.connected()) {
     mqtt.disconnect();
@@ -1028,7 +1073,7 @@ void retryWiFi() {
     WiFi.disconnect(false, false);
     delay(100);
   }
-  WiFi.begin();
+  beginSavedWiFi();
 }
 
 void ensureConnectivity() {
@@ -1068,6 +1113,13 @@ void ensureConnectivity() {
   } else if (!setupMode && settingsComplete() && joinState == Join::Idle &&
              millis() - brokerLostSinceMs >= BROKER_SETUP_AFTER_MS) {
     enterSetupMode(SetupReason::NoBroker, "the server does not answer from this network");
+  }
+
+  // Somebody is configuring the module over Bluetooth: an attempt against an
+  // unreachable server blocks loop() for seconds and would delay the scan and the
+  // new configuration they are about to send. Retry once they disconnect.
+  if (bleServer != nullptr && bleServer->getConnectedCount() > 0 && joinState == Join::Idle) {
+    return;
   }
 
   unsigned long now = millis();
@@ -1178,7 +1230,8 @@ void setup() {
   configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
 
   // Saved network (from the portal or from Bluetooth on a previous boot).
-  WiFi.begin();
+  adoptDriverNetwork();
+  beginSavedWiFi();
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_JOIN_TIMEOUT_MS) {
     delay(250);
