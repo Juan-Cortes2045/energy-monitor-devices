@@ -64,6 +64,10 @@ Preferences prefs;
 
 char topicTelemetry[80];
 char topicStatus[80];
+// Commands from the backend (retained): {"cmd":"unlink"} when the module is removed
+// from its home in the web app.
+char topicCommand[80];
+volatile bool unlinkRequested = false;
 
 // -----------------------------------------------------------------------------
 // Global objects
@@ -314,6 +318,7 @@ void refreshBleInfo();
 void applySettings() {
   snprintf(topicTelemetry, sizeof(topicTelemetry), "%s%s/telemetry", TOPIC_BASE, settings.deviceId);
   snprintf(topicStatus, sizeof(topicStatus), "%s%s/status", TOPIC_BASE, settings.deviceId);
+  snprintf(topicCommand, sizeof(topicCommand), "%s%s/command", TOPIC_BASE, settings.deviceId);
   mqtt.setServer(settings.mqttHost, (uint16_t)atoi(settings.mqttPort));
 
   // The form shows the current values. The api key is never shown again:
@@ -722,6 +727,7 @@ void configureMqtt() {
 #endif
   mqtt.setKeepAlive(MQTT_KEEPALIVE_S);
   mqtt.setBufferSize(MQTT_BUFFER_SIZE);
+  mqtt.setCallback(onMqttMessage);
   mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
 }
 
@@ -770,6 +776,7 @@ bool mqttConnect() {
 
   if (ok) {
     logLine("[MQTT] connected as " + String(clientId));
+    mqtt.subscribe(topicCommand, 1);
     publishStatus("online");
     reconnectDelayMs = RECONNECT_MIN_DELAY_MS;
     mqttRejections = 0;
@@ -1012,8 +1019,41 @@ void handleSetupMode() {
   if (setupExitAtMs != 0 && (long)(millis() - setupExitAtMs) > 0) {
     exitSetupMode("linked and connected to the broker");
   } else if ((long)(millis() - setupUntilMs) > 0 && joinState == Join::Idle) {
-    exitSetupMode(settingsComplete() ? "timed out" : "timed out, still not configured");
+    if (settingsComplete()) {
+      exitSetupMode("timed out");
+    } else {
+      // A module without a home has nothing else to do: it keeps offering Bluetooth.
+      setupUntilMs = millis() + SETUP_MODE_TIMEOUT_MS;
+    }
   }
+}
+
+// Called from mqtt.loop(): only flags the command, handled in loop().
+void onMqttMessage(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, topicCommand) != 0 || length == 0) {
+    return;   // an empty retained message only clears a previous command
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, length)) {
+    return;
+  }
+  if (strcmp(doc["cmd"] | "", "unlink") == 0) {
+    unlinkRequested = true;
+  }
+}
+
+// The module was removed from its home: its key no longer works. It forgets it
+// (keeping the Wi-Fi network) and offers Bluetooth right away to be linked again.
+void handleUnlinkCommand() {
+  if (!unlinkRequested) {
+    return;
+  }
+  unlinkRequested = false;
+  logLine("[CFG] removed from its home in the web app: forgetting the api key");
+  settings.apiKey[0] = '\0';
+  saveSettings();
+  mqtt.disconnect();
+  enterSetupMode(SetupReason::Unlinked, "module removed from its home");
 }
 
 // Defined here, not next to its variables: the Arduino builder puts function
@@ -1262,6 +1302,7 @@ void setup() {
 
 void loop() {
   handlePortalButton();
+  handleUnlinkCommand();
   handleSetupMode();
   ensureConnectivity();
 

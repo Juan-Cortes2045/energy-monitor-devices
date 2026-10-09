@@ -227,7 +227,7 @@ This path requires the device to exist in the backend already (with its api key)
 Expected serial output:
 
 ```
-=== EnergyMonitor ESP32 + PZEM-004T V3 fw=1.3.7 ===
+=== EnergyMonitor ESP32 + PZEM-004T V3 fw=1.3.8 ===
 [PZEM] UART2 ready at 9600 baud, addr=0xf8
 [TLS] trusting Let's Encrypt and the development CA
 [CFG] deviceId=DEV0000042 deviceCode=EM1A2B broker=192.168.1.50:8883 (TLS) apiKey=set
@@ -282,6 +282,7 @@ docker exec energy-monitor-mqtt mosquitto_pub -h localhost -p 8883 \
 |---|---|---|---|
 | `energy-monitor/devices/{deviceId}/telemetry` | 0 | no | Electrical reading |
 | `energy-monitor/devices/{deviceId}/status` | 0 | yes | `online` / `offline` (also the last will), RSSI and IP |
+| `energy-monitor/devices/{deviceId}/command` | 1 | yes | written by the backend, read by the module: `{"cmd":"unlink"}` when it is removed from its home (it forgets its key and offers Bluetooth at once); an empty message clears it when linked again |
 
 The broker only lets a device **publish on its own two topics**: it cannot read anything or
 impersonate another device. The backend takes the `deviceId` from the topic, not from the payload,
@@ -330,7 +331,7 @@ and drops a message whose `deviceId` does not match.
   "status": "online",
   "rssi": -58,
   "ip": "192.168.1.37",
-  "firmwareVersion": "1.3.7",
+  "firmwareVersion": "1.3.8",
   "uptimeSeconds": 12345
 }
 ```

@@ -37,7 +37,7 @@
 
 #define DEVICE_NAME      "Main meter"
 #define DEVICE_LOCATION  "Room 1"
-#define FIRMWARE_VERSION "1.3.7"
+#define FIRMWARE_VERSION "1.3.8"
 
 // -----------------------------------------------------------------------------
 // 2. Setup mode: Bluetooth (web) + Wi-Fi portal (fallback)
