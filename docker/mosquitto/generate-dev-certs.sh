@@ -32,11 +32,10 @@ fi
 
 # LAN IPv4 addresses: `hostname -I` on Linux, ipconfig on macOS.
 lan_ips() {
-  if hostname -I >/dev/null 2>&1; then
-    hostname -I
-  else
-    for iface in en0 en1; do ipconfig getifaddr "$iface" 2>/dev/null || true; done
-  fi
+  case "$(uname -s)" in
+    Linux*)  hostname -I 2>/dev/null || true ;;
+    Darwin*) for iface in en0 en1; do ipconfig getifaddr "$iface" 2>/dev/null || true; done ;;
+  esac
 }
 
 san="DNS:localhost,DNS:$(hostname),IP:127.0.0.1"
