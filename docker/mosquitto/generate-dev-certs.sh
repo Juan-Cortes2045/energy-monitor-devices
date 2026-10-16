@@ -50,11 +50,12 @@ done
 echo "Issuing the broker certificate for: $san"
 openssl req -newkey rsa:2048 -nodes -sha256 \
   -subj "/O=EnergyMonitor Dev/CN=energy-monitor-mqtt" \
-  -keyout server.key -out server.csr 2>/dev/null
+  -keyout server.key -out server.csr
+ext="$(mktemp)"
+printf "subjectAltName=%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n" "$san" > "$ext"
 openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
-  -days 825 -sha256 -out server.crt \
-  -extfile <(printf "subjectAltName=%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n" "$san") 2>/dev/null
-rm -f server.csr
+  -days 825 -sha256 -out server.crt -extfile "$(cygpath -m "$ext" 2>/dev/null || echo "$ext")"
+rm -f "$ext" server.csr
 
 # The container runs as uid 1000 (the mosquitto user of the image).
 chmod 644 ca.crt server.crt
